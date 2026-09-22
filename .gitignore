@@ -1,0 +1,13 @@
+.DS_Store
+.vscode/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+.venv/
+venv/
+*.MOV
+*.mov
+*.mp4
+*.pt
+iphone01_5min_csvfix/
