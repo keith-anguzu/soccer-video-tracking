@@ -1,0 +1,8 @@
+# Direct dependencies imported by analyze_match.py.
+# Unpinned: record resolved versions per run; no tested version lock yet.
+opencv-python
+numpy
+pandas
+scipy
+scikit-learn
+ultralytics

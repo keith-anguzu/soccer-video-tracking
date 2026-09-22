@@ -11,3 +11,14 @@ venv/
 *.mp4
 *.pt
 iphone01_5min_csvfix/
+
+# Local inputs, calibration, and generated analysis runs
+footage/
+data/
+calibrations/
+calibration*.json
+reports/
+*.avi
+*.mkv
+*.gpx
+*.tcx
