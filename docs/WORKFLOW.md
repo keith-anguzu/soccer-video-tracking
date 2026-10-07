@@ -39,12 +39,15 @@ The single-video analysis command refuses to reuse a folder containing certain e
 | `_raw_detections.csv` | Detection observations retained for troubleshooting. |
 | `player_tracks.csv` | Processed player trajectories. |
 | `player_summary.csv` | Movement summaries and smoothing corrections. |
+| `player_maps/track_<id>_maps.png` | Heat map and start-to-end position map for each track with at least 10 valid positions. |
 | `tracking_quality.csv` | Quality findings to review before interpreting metrics. |
 | `annotated_match.mp4` | Visual tracking output when video output is enabled; codec fallback may use AVI. |
 | `_raw_ball.csv` | Ball detections when ball tracking is enabled. |
 | `possession_summary.csv` | Conditional possession/pass estimates when usable ball results are available. |
 
 Check the coordinate units, track continuity, team assignments, and raw versus smoothed distance. Visually inspect representative footage. Treat low-quality estimates as unresolved rather than validated performance statistics.
+
+With a calibration, player maps use pitch coordinates in metres. Without one, they use image pixels and are not true pitch maps. Map filenames use temporary video tracker IDs, which can switch after occlusion; inspect the annotated video before identifying a map as a specific player. The heat map shows where the player was detected most often, while the position map shows the observed path (green start, red end).
 
 ## 5. Record provenance
 

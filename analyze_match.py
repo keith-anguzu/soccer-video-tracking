@@ -1491,6 +1491,107 @@ def summarise(tracks: pd.DataFrame, calibrated: bool) -> pd.DataFrame:
     return summary.sort_values(["team_index", "distance"], ascending=[True, False])
 
 
+def _draw_map_field(canvas: np.ndarray, bounds: tuple[int, int, int, int],
+                    pitch_length: float, pitch_width: float) -> tuple[int, int, int, int]:
+    left, top, right, bottom = bounds
+    available_width, available_height = right - left, bottom - top
+    aspect = pitch_length / pitch_width if pitch_width > 0 else 1.0
+    field_width = min(available_width, int(available_height * aspect))
+    field_height = min(available_height, int(field_width / max(aspect, 1e-6)))
+    x1 = left + (available_width - field_width) // 2
+    y1 = top + (available_height - field_height) // 2
+    x2, y2 = x1 + field_width, y1 + field_height
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), (54, 105, 64), -1)
+    line = (230, 235, 230)
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), line, 2)
+    midpoint = (x1 + x2) // 2
+    cv2.line(canvas, (midpoint, y1), (midpoint, y2), line, 1)
+    centre = ((x1 + x2) // 2, (y1 + y2) // 2)
+    cv2.circle(canvas, centre, max(2, field_height // 7), line, 1)
+    return x1, y1, x2, y2
+
+
+def write_player_maps(tracks: pd.DataFrame, output_dir: Path,
+                      calibration: Calibration | None,
+                      image_width: int, image_height: int) -> list[Path]:
+    """Write per-track heat and positional maps from the processed trajectories."""
+    x_col, y_col = (("pitch_x", "pitch_y") if calibration is not None
+                    else ("image_x", "image_y"))
+    dimensions = ((calibration.pitch_length, calibration.pitch_width)
+                  if calibration is not None else (float(image_width), float(image_height)))
+    units = "metres" if calibration is not None else "image pixels (uncalibrated)"
+    output_paths = []
+
+    for track_id, player in tracks.groupby("track_id", sort=True):
+        player = player.sort_values("time_seconds")
+        points = player[[x_col, y_col]].to_numpy(dtype=float)
+        valid = np.isfinite(points).all(axis=1)
+        points = points[valid]
+        if len(points) < 10:
+            continue
+
+        length, width = dimensions
+        if length <= 0 or width <= 0:
+            continue
+        canvas = np.full((980, 1100, 3), (35, 35, 35), dtype=np.uint8)
+        team_name = str(player["team_name"].mode().iloc[0])
+        title = f"Track {int(track_id)} - {team_name} - {len(points)} positions"
+        cv2.putText(canvas, title, (45, 38), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8, (245, 245, 245), 2, cv2.LINE_AA)
+        cv2.putText(canvas, f"Heat map ({units})", (45, 76),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (245, 245, 245), 1, cv2.LINE_AA)
+        cv2.putText(canvas, f"Position map ({units})", (45, 530),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (245, 245, 245), 1, cv2.LINE_AA)
+
+        heat_bounds = (45, 90, 1055, 470)
+        position_bounds = (45, 545, 1055, 925)
+        heat_field = _draw_map_field(canvas, heat_bounds, length, width)
+        position_field = _draw_map_field(canvas, position_bounds, length, width)
+
+        def map_points(field_bounds):
+            x1, y1, x2, y2 = field_bounds
+            xs = x1 + np.clip(points[:, 0] / length, 0, 1) * (x2 - x1)
+            ys = y1 + np.clip(points[:, 1] / width, 0, 1) * (y2 - y1)
+            return np.column_stack((xs, ys)).astype(int)
+
+        heat_points = map_points(heat_field)
+        density = np.zeros(canvas.shape[:2], dtype=np.uint8)
+        for x, y in heat_points:
+            cv2.circle(density, (int(x), int(y)), 12, 255, -1)
+        density = cv2.GaussianBlur(density, (0, 0), 13)
+        x1, y1, x2, y2 = heat_field
+        field_density = density[y1:y2 + 1, x1:x2 + 1]
+        colored = cv2.applyColorMap(field_density, cv2.COLORMAP_TURBO)
+        alpha = (field_density.astype(np.float32) / 255.0 * 0.78)[:, :, None]
+        field = canvas[y1:y2 + 1, x1:x2 + 1].astype(np.float32)
+        canvas[y1:y2 + 1, x1:x2 + 1] = (
+            field * (1.0 - alpha) + colored.astype(np.float32) * alpha
+        ).astype(np.uint8)
+
+        trajectory = map_points(position_field)
+        for index in range(1, len(trajectory)):
+            elapsed = player.loc[valid, "time_seconds"].iloc[index] - \
+                player.loc[valid, "time_seconds"].iloc[index - 1]
+            if elapsed <= 1.0:
+                cv2.line(canvas, tuple(trajectory[index - 1]),
+                         tuple(trajectory[index]), (40, 220, 245), 2, cv2.LINE_AA)
+        cv2.circle(canvas, tuple(trajectory[0]), 7, (70, 230, 70), -1)
+        cv2.circle(canvas, tuple(trajectory[-1]), 7, (40, 50, 240), -1)
+        cv2.putText(canvas, "Start", (trajectory[0][0] + 8, trajectory[0][1]),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (70, 230, 70), 1, cv2.LINE_AA)
+        cv2.putText(canvas, "End", (trajectory[-1][0] + 8, trajectory[-1][1]),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (40, 50, 240), 1, cv2.LINE_AA)
+        cv2.putText(canvas, "Tracker IDs can change; confirm identity in annotated video.",
+                    (45, 960), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (190, 190, 190), 1, cv2.LINE_AA)
+
+        path = output_dir / f"track_{int(track_id)}_maps.png"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if not cv2.imwrite(str(path), canvas):
+            raise OSError(f"Could not write player map: {path}")
+        output_paths.append(path)
+    return output_paths
+
+
 # --------------------------------------------------------------------------
 # batch analysis
 # --------------------------------------------------------------------------
@@ -1504,8 +1605,8 @@ def run_analyse(args: argparse.Namespace) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     # Fail before inference if this directory belongs to an earlier run.
     for name in ("_raw_detections.csv", "_raw_ball.csv", "player_tracks.csv",
-                 "player_summary.csv", "tracking_quality.csv", "annotated_match.mp4",
-                 "annotated_match.avi"):
+                 "player_summary.csv", "player_passes.csv", "player_maps",
+                 "tracking_quality.csv", "annotated_match.mp4", "annotated_match.avi"):
         if (args.output_dir / name).exists():
             raise SystemExit(
                 f"Existing results found in {args.output_dir.resolve()}. "
@@ -1602,6 +1703,8 @@ def run_analyse(args: argparse.Namespace) -> None:
 
     summary = summarise(tracks, calibrated=calibration is not None)
     summary.to_csv(args.output_dir / "player_summary.csv", index=False)
+    map_paths = write_player_maps(tracks, args.output_dir / "player_maps",
+                                  calibration, width, height)
 
     possession_summary = None
     ball_stats = {}
@@ -1622,6 +1725,11 @@ def run_analyse(args: argparse.Namespace) -> None:
 
     print(f"Saved tracks:  {args.output_dir / 'player_tracks.csv'}")
     print(f"Saved summary: {args.output_dir / 'player_summary.csv'}")
+    if map_paths:
+        print(f"Saved player maps: {args.output_dir / 'player_maps'} "
+              f"({len(map_paths)} tracks; heat and position maps)")
+    else:
+        print("No player maps created: no track had at least 10 valid positions.")
     print(f"Saved quality: {args.output_dir / 'tracking_quality.csv'}")
     if possession_summary is not None:
         print(f"Saved ball:    {args.output_dir / 'possession_summary.csv'}")
